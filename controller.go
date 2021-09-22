@@ -62,9 +62,7 @@ func NewController(
 			newEvent.eventType = "create"
 
 			if err == nil {
-				klog.Infof("Queue Len %v", queue.Len())
 				queue.Add(newEvent)
-				klog.Infof("Queue Len %v", queue.Len())
 			}
 		},
 		UpdateFunc: func(oldObj, newObj interface{}) {
@@ -152,9 +150,7 @@ func (c *Controller) Run(stopch <-chan struct{}) error {
 }
 
 func (c *Controller) runWorker() {
-	klog.Info("Run Worker")
 	for c.processNextWorkItem() {
-		klog.Info(c.queue.Len())
 	}
 }
 
@@ -219,7 +215,7 @@ func (c *Controller) syncHandler(event Event) error {
 
 		if val, ok := svc.Annotations[controllerEnabledAnnotation]; ok {
 			if val == "true" {
-				if err := updateIngress(c.kubeclientset, svc); err != nil {
+				if err := createUpdateIngressRlues(c.kubeclientset, svc); err != nil {
 					utilruntime.HandleError(fmt.Errorf("foo '%s' in work queue no longer exists", name))
 					return nil
 				}
@@ -230,10 +226,11 @@ func (c *Controller) syncHandler(event Event) error {
 		svc, err = c.serviceLister.Services(namespace).Get(name)
 		if err != nil {
 			if errors.IsNotFound(err) {
-				if err := deleteIngress(namespace, name); err != nil {
+				if err := deleteIngressRules(c.kubeclientset, namespace, name); err != nil {
 					utilruntime.HandleError(fmt.Errorf("foo '%s' in work queue no longer exists", name))
 					return nil
 				}
+				break
 			}
 			return err
 		}
@@ -243,7 +240,7 @@ func (c *Controller) syncHandler(event Event) error {
 	return nil
 }
 
-func updateIngress(clientset kubernetes.Interface, svc *corev1.Service) error {
+func createUpdateIngressRlues(clientset kubernetes.Interface, svc *corev1.Service) error {
 	ingressName := svc.GetNamespace() + "-ingress"
 	ingress, err := getIngress(clientset, svc.GetNamespace(), ingressName)
 	if err != nil {
@@ -384,6 +381,38 @@ func createIngress(namespace, ingressName string) *networkv1.Ingress {
 	}
 }
 
-func deleteIngress(namespace, name string) error {
+func deleteIngressRules(clientset kubernetes.Interface, namespace string, name string) error {
+	// if service is deleted
+	// delete by name:
+	//   find all paths where backend matches
+	//      delete the path
+	// if host has no paths delete host
+
+	ingress, err := clientset.NetworkingV1().Ingresses(namespace).Get(context.Background(), namespace+"-ingress", metav1.GetOptions{})
+	if err != nil {
+		return err
+	}
+
+	newHosts := []networkv1.IngressRule{}
+	for _, host := range ingress.Spec.Rules {
+		newPaths := []networkv1.HTTPIngressPath{}
+		for _, path := range host.HTTP.Paths {
+			if path.Backend.Service.Name != name {
+				newPaths = append(newPaths, path)
+			}
+		}
+
+		host.HTTP.Paths = newPaths
+		if len(host.HTTP.Paths) != 0 {
+			newHosts = append(newHosts, host)
+		}
+	}
+
+	ingress.Spec.Rules = newHosts
+	if len(ingress.Spec.Rules) == 0 {
+		err = clientset.NetworkingV1().Ingresses(namespace).Delete(context.Background(), namespace+"-ingress", metav1.DeleteOptions{})
+	} else {
+		ingress, err = clientset.NetworkingV1().Ingresses(namespace).Update(context.Background(), ingress, metav1.UpdateOptions{})
+	}
 	return nil
 }
