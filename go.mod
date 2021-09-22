@@ -1,4 +1,4 @@
-module nginxobjectcontroller
+module ingresskindcontroller
 
 go 1.16
 
